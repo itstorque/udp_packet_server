@@ -7,6 +7,8 @@ import subprocess
 
 VERIFICATION_LOG = 'verification_failures.log'
 CHECKSUM_LOG = 'checksum_failures.log'
+DEBUG_LOG = 'debug.log'
+ERRORS_LOG = 'errors.log'
 
 with open('payload_dump.bin', 'rb') as f:
     payloads = pickle.load(f, encoding="bytes")[:250]
@@ -19,6 +21,8 @@ with open('payload_dump.bin', 'rb') as f:
 # print(payloads[-1][3:4].hex())
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setblocking(0)
+
 cmd = "python server.py --keys '{\"0x42\": \"key.bin\", \"0x23\": \"key2.bin\"}' --binaries '{\"0x42\": \"cat.jpg\", \"0x23\": \"test.txt\"}' -d '0' -p '1337'"
 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
 
@@ -62,11 +66,15 @@ for i in range(10):
     else:
         print("Something isn't right...")
 
-    # Clean up
-    # if os.path.exists(VERIFICATION_LOG):
-    #     os.remove(VERIFICATION_LOG)
-    # if os.path.exists(CHECKSUM_LOG):
-    #     os.remove(CHECKSUM_LOG)
+# Clean up
+if os.path.exists(VERIFICATION_LOG):
+    os.remove(VERIFICATION_LOG)
+if os.path.exists(CHECKSUM_LOG):
+    os.remove(CHECKSUM_LOG)
+if os.path.exists(DEBUG_LOG):
+    os.remove(DEBUG_LOG)
+if os.path.exists(ERRORS_LOG):
+    os.remove(ERRORS_LOG)
             
 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
 sock.close()

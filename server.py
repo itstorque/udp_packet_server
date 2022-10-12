@@ -9,9 +9,11 @@ import socket
 import argparse
 import json
 
-# For logging and other threading
+# For logging, error handling and other threading
 import logging
 import threading
+import traceback
+import sys
 
 # For CRC and SHA-256
 import hashlib
@@ -23,7 +25,7 @@ class ServerLogger:
     
     # TODO: Add hex-ing ability to threads... with datatype input
     
-    def __init__(self, name, delay, formatting=None, level=logging.INFO) -> None:
+    def __init__(self, name, delay=0, formatting=None, level=logging.INFO) -> None:
         # name: logger name, logfile is called <name>.log
         # delay: delay to write to log file
         # formatting: specifies the format to print things into the logger, by default it applies str() on all the inputs
@@ -82,9 +84,39 @@ class ServerLogger:
                 "\n".join([self.formatter[i](data[i]) for i in range(len(data))]) + "\n"
             )
         
+    def exception(self, type, value, tb):
+        
+        self.logger.exception(''.join(traceback.format_exception(type, value, tb)))
+        
     def __call__(self, *args, **kwds) -> None:
         # shorthand. calling the object like a function makes it log using a thread.
         return self.async_log(*args, **kwds)
+    
+    # These two classes define the truthiness of a Logger such that a NoLogger() is False
+    def __bool__(self):
+        return True
+    
+    def __nonzero__(self):
+        return True
+
+class NoLogger(ServerLogger):
+
+    def __init__(self) -> None:
+        pass
+    
+    def async_log(self, *args, **kwds):
+        pass
+    
+    def log(self, *args, **kwds):
+        pass
+    
+    
+    # These two classes define the truthiness of a Logger such that a NoLogger() is False
+    def __bool__(self):
+        return False
+
+    def __nonzero__(self):
+        return False
 
 class Key():
     # an object that stores a public_key, exponent pair
@@ -101,7 +133,7 @@ class Server():
     
     ## INIT FUNCTIONS
     
-    def __init__(self, hostname, port, keys, bins, verification_logger, checksum_logger, error_logger, debug_logger=None, bufsize=1024) -> None:
+    def __init__(self, hostname, port, keys, bins, verification_logger, checksum_logger, error_logger=NoLogger(), debug_logger=NoLogger(), bufsize=1024) -> None:
         
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.bufsize = bufsize
@@ -116,6 +148,9 @@ class Server():
         
         self.bins = self.build_binary_dict(bins)
         self.keys, self.chksums = self.build_keys_dict(keys)
+        
+        if error_logger:
+            sys.excepthook = error_logger.exception
         
         # self.chksums maps a seq_num to a list[ (int) chksum value, (bool) checked, (bool) used to generate next in seq ]
         # that way we can handle misordered packets efficiently
@@ -167,11 +202,28 @@ class Server():
         
         while True:
             
-            # TODO: if you want to add filtering based on addresses/map addresses to 
-            #       id's, this can happen here
-            data, address = self.socket.recvfrom(self.bufsize)
+            if self.error_logger:
             
-            self.validate_packet(data)
+                try:
+                    
+                    self.recieve_packet()
+                    
+                except Exception as e:
+                    
+                    self.error_logger.exception(*sys.exc_info())
+                    
+            else:
+                
+                self.recieve_packet()
+                
+    def recieve_packet(self):
+                
+        # TODO: if you want to add filtering based on addresses/map addresses to 
+        #       id's, this can happen here
+        
+        data, address = self.socket.recvfrom(self.bufsize)
+        
+        self.validate_packet(data)
             
     def validate_packet(self, data):
         
@@ -247,16 +299,17 @@ class Server():
             
     def calc_checksum(self, seq_num, chksum, id):
         
+        # seq_num = (seq_num + 1) % 0xFFFFFFFF
         seq_num += 1
         
         # if not already computed (due to shuffling)
         if seq_num not in chksum:
             
             # if previous seq_num computed (if not then packet misordered)
-            if seq_num-1 in chksum:
+            if seq_num-1 in chksum: # or (0xFFFFFFFF + seq_num) - 1
                 
                 # calculate next checksum
-                chksum[seq_num] = [((zlib.crc32(self.bins[id], chksum[seq_num-1][0]) & 0xffffffff)), False, False]
+                chksum[seq_num] = [((zlib.crc32(self.bins[id], chksum[seq_num-1][0]) & 0xFFFFFFFF)), False, False]
             
             else:
                 
@@ -267,7 +320,7 @@ class Server():
                         m = i
                 
                 for x in range(m+1, seq_num+1):
-                    chksum[x] = [((zlib.crc32(self.bins[id], chksum[x-1][0]) & 0xffffffff)), False, False]
+                    chksum[x] = [((zlib.crc32(self.bins[id], chksum[x-1][0]) & 0xFFFFFFFF)), False, False]
         
         return chksum, seq_num
 
@@ -277,15 +330,17 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     
-    parser.add_argument("-p", "--port", help="port to receive packets on", type=int, default=8080, dest="port")
+    parser.add_argument("--hostname", help="hostname", type=str, default="127.0.0.1", dest="hostname")
+    
+    parser.add_argument("-p", "--port", help="port to receive packets on", type=int, default=1337, dest="port")
     
     parser.add_argument("-k", "--keys", help="a dictionary of {packet_id: key_file_path} mappings", type=str, default="localhost", dest="keys")
     
     parser.add_argument("-b", "--binaries", help="a dictionary of {packet_id: binary_path} mappings", type=str, default="localhost", dest="binaries")
     
-    parser.add_argument("-d", "--delay", help="delay (in seconds) for writing to log file", type=int, default="localhost", dest="delay")
+    parser.add_argument("-d", "--delay", help="delay (in seconds) for writing to log file", type=int, default=0, dest="delay")
     
-    parser.add_argument("--hostname", help="hostname", type=str, default="127.0.0.1", dest="hostname")
+    parser.add_argument("--bufsize", help="size of the buffer to recieve packets in", type=int, default=1024, dest="bufsize")
     
     args = parser.parse_args()
     
@@ -305,7 +360,8 @@ if __name__ == "__main__":
                     verification_logger=verification_logger,
                     checksum_logger=checksum_logger,
                     error_logger=error_logger,
-                    debug_logger=debug_logger)
+                    debug_logger=debug_logger,
+                    bufsize=args.bufsize)
     
     # Launch server
     server.run()
